@@ -1,0 +1,19 @@
+sample:
+  description: TBD
+  name: TBD
+tests:
+  sample.bluetooth.peripheral_esp:
+    harness: bluetooth
+    platform_allow: qemu_cortex_m3 qemu_x86
+    tags: bluetooth
+  sample.sensor.hts221:
+    harness: console
+    tags: sensors
+    depends_on: i2c hts221
+    harness_config:
+        type: multi_line
+        ordered: yes
+        regex:
+            - "Temperature: (.*)"
+            - "Relative Humidity: (.*)"
+        fixture: fixture_i2c_hts221
