@@ -31,11 +31,13 @@
 #define SENSOR_1_NAME				"Temperature Sensor 1"
 #define SENSOR_2_NAME				"Temperature Sensor 2"
 #define SENSOR_3_NAME				"Humidity Sensor"
+#define SENSOR_4_NAME				"Air Quality Sensor"
 
 /* Sensor Internal Update Interval [seconds] */
 #define SENSOR_1_UPDATE_IVAL			5
 #define SENSOR_2_UPDATE_IVAL			12
 #define SENSOR_3_UPDATE_IVAL			60
+#define SENSOR_4_UPDATE_IVAL			30
 
 /* ESS error definitions */
 #define ESS_ERR_WRITE_REJECT			0x80
@@ -99,6 +101,11 @@ struct humidity_sensor {
 	struct es_measurement meas;
 };
 
+struct air_quality_sensor {
+	int16_t co2_value;
+	int16_t tvoc_value;
+	struct es_measurement meas;
+};
 static bool simulate_temp;
 static struct temperature_sensor sensor_1 = {
 		.temp_value = 1200,
@@ -131,6 +138,16 @@ static struct humidity_sensor sensor_3 = {
 		.meas.update_interval = SENSOR_3_UPDATE_IVAL,
 		.meas.application = 0x1c,
 		.meas.meas_uncertainty = 0x01,
+};
+
+static struct air_quality_sensor sensor_4 = {
+		.co2_value = 1200,
+		.tvoc_value = 1200,
+		.meas.sampling_func = 0x00,
+		.meas.meas_period = 0x01,
+		.meas.update_interval = SENSOR_4_UPDATE_IVAL,
+		.meas.application = 0x1b,
+		.meas.meas_uncertainty = 0x04,
 };
 
 static void temp_ccc_cfg_changed(const struct bt_gatt_attr *attr,
@@ -313,6 +330,13 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 
 	/* Humidity Sensor */
 	BT_GATT_CHARACTERISTIC(BT_UUID_HUMIDITY, BT_GATT_CHRC_READ,
+			       BT_GATT_PERM_READ,
+			       read_u16, NULL, &sensor_3.humid_value),
+	BT_GATT_CUD(SENSOR_3_NAME, BT_GATT_PERM_READ),
+	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
+			   read_es_measurement, NULL, &sensor_3.meas),
+	/* Air Quality Sensor */
+	BT_GATT_CHARACTERISTIC(BT_UUID_AIR_QUALITY, BT_GATT_CHRC_READ,
 			       BT_GATT_PERM_READ,
 			       read_u16, NULL, &sensor_3.humid_value),
 	BT_GATT_CUD(SENSOR_3_NAME, BT_GATT_PERM_READ),
