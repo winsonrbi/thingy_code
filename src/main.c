@@ -436,6 +436,7 @@ static void hts221_handler(const struct device *dev,
 void main(void)
 {
 	int err;
+	printf("Started Custom Bluetooth Service\n");
 	/*** Sensor code -Winson */
 	const struct device *dev = device_get_binding("HTS221");
 
