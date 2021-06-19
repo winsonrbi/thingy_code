@@ -32,7 +32,8 @@
 #define SENSOR_2_NAME				"Temperature Sensor 2"
 #define SENSOR_3_NAME				"Humidity Sensor"
 #define SENSOR_4_NAME				"Air Quality Sensor"
-
+#define BT_UUID_AIR_QUALITY \
+	BT_UUID_DECLARE_16(0x1809)
 /* Sensor Internal Update Interval [seconds] */
 #define SENSOR_1_UPDATE_IVAL			5
 #define SENSOR_2_UPDATE_IVAL			12
@@ -55,17 +56,9 @@
 #define ESS_EQUAL_TO_REF_VALUE			0x08
 #define ESS_NOT_EQUAL_TO_REF_VALUE		0x09
 
-
-
-static ssize_t read_u16(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-			void *buf, uint16_t len, uint16_t offset)
-{
-	const uint16_t *u16 = attr->user_data;
-	uint16_t value = sys_cpu_to_le16(*u16);
-
-	return bt_gatt_attr_read(conn, attr, buf, len, offset, &value,
-				 sizeof(value));
-}
+/*** use uuid's defined here https://nordicsemiconductor.github.io/Nordic-Thingy52-FW/documentation/firmware_architecture.html */
+static const struct bt_uuid_128 custom_uuid = BT_UUID_INIT_128(
+		BT_UUID_128_ENCODE(0xEF680204,0x9B35,0x4933,0x9B10,0x52FFA9740042));
 
 /* Environmental Sensing Service Declaration */
 
@@ -101,11 +94,40 @@ struct humidity_sensor {
 	struct es_measurement meas;
 };
 
+struct air_quality_values {
+	uint16_t eco2;
+	uint16_t tvoc;
+}__packed;
+
 struct air_quality_sensor {
-	int16_t co2_value;
-	int16_t tvoc_value;
+	struct air_quality_values values;
 	struct es_measurement meas;
 };
+
+/*** read call backs, used to define how the data should be read for the BT_GATT_CHARACTERISTICS macros */
+static ssize_t read_u16(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			void *buf, uint16_t len, uint16_t offset)
+{
+	const uint16_t *u16 = attr->user_data;
+	uint16_t value = sys_cpu_to_le16(*u16);
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &value,
+				 sizeof(value));
+}
+
+static ssize_t read_air_quality_values(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			void *buf, uint16_t len, uint16_t offset)
+{
+	const struct air_quality_values *values = attr->user_data;
+	uint16_t values_to_send[2];
+	values_to_send[0] = sys_cpu_to_le16(values->eco2);
+	values_to_send[1] = sys_cpu_to_le16(values->tvoc);
+
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &values_to_send,
+				 sizeof(values_to_send));
+}
+
+/*** Initialize sensors */
 static bool simulate_temp;
 static struct temperature_sensor sensor_1 = {
 		.temp_value = 1200,
@@ -141,8 +163,8 @@ static struct humidity_sensor sensor_3 = {
 };
 
 static struct air_quality_sensor sensor_4 = {
-		.co2_value = 1200,
-		.tvoc_value = 1200,
+		.values.eco2 = 420,
+		.values.tvoc = 420,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_4_UPDATE_IVAL,
@@ -336,30 +358,30 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
 			   read_es_measurement, NULL, &sensor_3.meas),
 	/* Air Quality Sensor */
-	BT_GATT_CHARACTERISTIC(BT_UUID_AIR_QUALITY, BT_GATT_CHRC_READ,
+	BT_GATT_CHARACTERISTIC(&custom_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
-			       read_u16, NULL, &sensor_3.humid_value),
-	BT_GATT_CUD(SENSOR_3_NAME, BT_GATT_PERM_READ),
+			       read_air_quality_values, NULL, &sensor_4.values),
+	BT_GATT_CUD(SENSOR_4_NAME, BT_GATT_PERM_READ),
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
-			   read_es_measurement, NULL, &sensor_3.meas),
+			   read_es_measurement, NULL, &sensor_4.meas),
 );
 
-static void ess_simulate(const struct device *dev)
+static void ess_simulate(const struct device *hts221)
 {
 	uint16_t val;
 	/*** Sensor Code -Winson */
 	struct sensor_value temp, hum;
-	if (sensor_sample_fetch(dev) < 0) {
+	if (sensor_sample_fetch(hts221) < 0) {
 		printf("Sensor sample update error\n");
 		return;
 	}
 
-	if (sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) < 0) {
+	if (sensor_channel_get(hts221, SENSOR_CHAN_AMBIENT_TEMP, &temp) < 0) {
 		printf("Cannot read HTS221 temperature channel\n");
 		return;
 	}
 
-	if (sensor_channel_get(dev, SENSOR_CHAN_HUMIDITY, &hum) < 0) {
+	if (sensor_channel_get(hts221, SENSOR_CHAN_HUMIDITY, &hum) < 0) {
 		printf("Cannot read HTS221 humidity channel\n");
 		return;
 	}
@@ -367,7 +389,6 @@ static void ess_simulate(const struct device *dev)
 	update_temperature(NULL, &ess_svc.attrs[9], (int) (sensor_value_to_double(&temp) * 100), &sensor_2);
 
 	sensor_3.humid_value = (int) (sensor_value_to_double(&hum) * 100);
-
 
 }
 
@@ -461,9 +482,9 @@ void main(void)
 {
 	int err;
 	/*** Sensor code -Winson */
-	const struct device *dev = device_get_binding("HTS221");
+	const struct device *hts221 = device_get_binding("HTS221");
 
-	if (dev == NULL) {
+	if (hts221 == NULL) {
 		printf("Could not get HTS221 device\n");
 		return;
 	}
@@ -473,7 +494,7 @@ void main(void)
 			.type = SENSOR_TRIG_DATA_READY,
 			.chan = SENSOR_CHAN_ALL,
 		};
-		if (sensor_trigger_set(dev, &trig, hts221_handler) < 0) {
+		if (sensor_trigger_set(hts221, &trig, hts221_handler) < 0) {
 			printf("Cannot configure trigger\n");
 			return;
 		};
@@ -497,7 +518,7 @@ void main(void)
 
 		/* Temperature simulation */
 		if (simulate_temp) {
-			ess_simulate(dev);
+			ess_simulate(hts221);
 		}
 
 		/* Battery level simulation */
