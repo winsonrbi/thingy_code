@@ -25,6 +25,7 @@
 /*From sensor -Winson*/
 #include <device.h>
 #include<drivers/sensor.h>
+#include <drivers/sensor/ccs811.h>
 #include <stdio.h>
 #include <sys/util.h>
 
@@ -32,8 +33,6 @@
 #define SENSOR_2_NAME				"Temperature Sensor 2"
 #define SENSOR_3_NAME				"Humidity Sensor"
 #define SENSOR_4_NAME				"Air Quality Sensor"
-#define BT_UUID_AIR_QUALITY \
-	BT_UUID_DECLARE_16(0x1809)
 /* Sensor Internal Update Interval [seconds] */
 #define SENSOR_1_UPDATE_IVAL			5
 #define SENSOR_2_UPDATE_IVAL			12
@@ -483,9 +482,15 @@ void main(void)
 	int err;
 	/*** Sensor code -Winson */
 	const struct device *hts221 = device_get_binding("HTS221");
+	const struct device *ccs811 = device_get_binding(DT_LABEL(DT_INST(0, ams_ccs811)));
 
 	if (hts221 == NULL) {
 		printf("Could not get HTS221 device\n");
+		return;
+	}
+
+	if (ccs811 == NULL) {
+		printf("Could not get CCS811 device\n");
 		return;
 	}
 
