@@ -480,6 +480,8 @@ static void hts221_handler(const struct device *dev,
 void main(void)
 {
 	int err;
+	printf("Started Custom Bluetooth Service\n");
+	printk("KERNEL: Started Custom Bluetooth Service\n");
 	/*** Sensor code -Winson */
 	const struct device *hts221 = device_get_binding("HTS221");
 	const struct device *ccs811 = device_get_binding(DT_LABEL(DT_INST(0, ams_ccs811)));
