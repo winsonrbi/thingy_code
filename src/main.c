@@ -56,7 +56,7 @@
 #define ESS_NOT_EQUAL_TO_REF_VALUE		0x09
 
 /*** use uuid's defined here https://nordicsemiconductor.github.io/Nordic-Thingy52-FW/documentation/firmware_architecture.html */
-static const struct bt_uuid_128 custom_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 ccs811_uuid = BT_UUID_INIT_128(
 		BT_UUID_128_ENCODE(0xEF680204,0x9B35,0x4933,0x9B10,0x52FFA9740042));
 
 /* Environmental Sensing Service Declaration */
@@ -100,6 +100,13 @@ struct air_quality_values {
 
 struct air_quality_sensor {
 	struct air_quality_values values;
+	uint8_t condition;
+	union {
+		uint32_t seconds;
+		int16_t ref_val; /* Reference temperature */
+	};
+
+
 	struct es_measurement meas;
 };
 
@@ -127,7 +134,9 @@ static ssize_t read_air_quality_values(struct bt_conn *conn, const struct bt_gat
 }
 
 /*** Initialize sensors */
-static bool simulate_temp;
+/*** these bools are used to only fetch data when notify is enabled*/
+static bool notify_temp;
+static bool notify_gas;
 static struct temperature_sensor sensor_1 = {
 		.temp_value = 1200,
 		.lower_limit = -10000,
@@ -164,6 +173,7 @@ static struct humidity_sensor sensor_3 = {
 static struct air_quality_sensor sensor_4 = {
 		.values.eco2 = 420,
 		.values.tvoc = 420,
+		.condition = ESS_VALUE_CHANGED,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_4_UPDATE_IVAL,
@@ -174,9 +184,14 @@ static struct air_quality_sensor sensor_4 = {
 static void temp_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				 uint16_t value)
 {
-	simulate_temp = value == BT_GATT_CCC_NOTIFY;
+	notify_temp = value == BT_GATT_CCC_NOTIFY;
 }
 
+static void gas_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+				 uint16_t value)
+{
+	notify_gas = value == BT_GATT_CCC_NOTIFY;
+}
 struct read_es_measurement_rp {
 	uint16_t flags; /* Reserved for Future Use */
 	uint8_t sampling_function;
@@ -265,7 +280,7 @@ static ssize_t read_temp_trigger_setting(struct bt_conn *conn,
 		}
 	}
 }
-
+/*** determines which condition we notify on*/
 static bool check_condition(uint8_t condition, int16_t old_val, int16_t new_val,
 			    int16_t ref_val)
 {
@@ -294,7 +309,7 @@ static bool check_condition(uint8_t condition, int16_t old_val, int16_t new_val,
 		return false;
 	}
 }
-
+/*** used for notify */
 static void update_temperature(struct bt_conn *conn,
 			       const struct bt_gatt_attr *chrc, int16_t value,
 			       struct temperature_sensor *sensor)
@@ -314,6 +329,26 @@ static void update_temperature(struct bt_conn *conn,
 	}
 }
 
+static void update_gas(	struct bt_conn *conn,
+		      	const  struct bt_gatt_attr *chrc, int16_t co2, int16_t tvoc,
+			struct air_quality_sensor *sensor)
+{
+	bool notify_co2 = check_condition(sensor->condition,
+					  sensor->values.eco2, co2,
+					  sensor->ref_val);
+	bool notify_tvoc = check_condition(sensor->condition,
+					  sensor->values.tvoc, tvoc,
+					  sensor->ref_val);
+	sensor->values.eco2 = co2;
+	sensor->values.tvoc = tvoc;
+	if(notify_co2 || notify_tvoc) {
+		uint16_t values_to_send[2];
+		values_to_send[0] = sys_cpu_to_le16(sensor->values.eco2);
+		values_to_send[1] = sys_cpu_to_le16(sensor->values.tvoc);
+		bt_gatt_notify(conn, chrc, &values_to_send, sizeof(values_to_send));
+	}
+
+}
 BT_GATT_SERVICE_DEFINE(ess_svc,
 	BT_GATT_PRIMARY_SERVICE(BT_UUID_ESS),
 
@@ -357,19 +392,24 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
 			   read_es_measurement, NULL, &sensor_3.meas),
 	/* Air Quality Sensor */
-	BT_GATT_CHARACTERISTIC(&custom_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+	BT_GATT_CHARACTERISTIC(&ccs811_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
 			       read_air_quality_values, NULL, &sensor_4.values),
 	BT_GATT_CUD(SENSOR_4_NAME, BT_GATT_PERM_READ),
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
 			   read_es_measurement, NULL, &sensor_4.meas),
+	BT_GATT_CCC(gas_ccc_cfg_changed,
+		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
-static void ess_simulate(const struct device *hts221)
+static void ess_simulate(const struct device *hts221, const struct device *ccs811)
 {
-	uint16_t val;
 	/*** Sensor Code -Winson */
+	//HTS221 temp and humidity sensor
 	struct sensor_value temp, hum;
+	//CCS811 gas sensor
+	struct sensor_value co2, tvoc, voltage, current;
+
 	if (sensor_sample_fetch(hts221) < 0) {
 		printf("Sensor sample update error\n");
 		return;
@@ -386,9 +426,26 @@ static void ess_simulate(const struct device *hts221)
 	}
 	update_temperature(NULL, &ess_svc.attrs[2], (int) (sensor_value_to_double(&temp) * 100), &sensor_1);
 	update_temperature(NULL, &ess_svc.attrs[9], (int) (sensor_value_to_double(&temp) * 100), &sensor_2);
-
 	sensor_3.humid_value = (int) (sensor_value_to_double(&hum) * 100);
 
+	if (sensor_sample_fetch(ccs811) < 0) {
+		printf("Sensor sample update error\n");
+		return;
+	}
+
+	if (sensor_channel_get(ccs811, SENSOR_CHAN_CO2, &co2) < 0) {
+		printf("Cannot read CCS811 co2 channel\n");
+		return;
+	}
+
+	if (sensor_channel_get(ccs811, SENSOR_CHAN_VOC, &tvoc) < 0) {
+		printf("Cannot read HTS221 voc channel\n");
+		return;
+	}
+	printf("CCS811 gas sensor value: %d\n",(int) (sensor_value_to_double(&co2)));
+	//sensor_4.values.eco2 = (int) (sensor_value_to_double(&co2));
+	update_gas(NULL, &ess_svc.attrs[20], (int)(sensor_value_to_double(&co2)), (int) (sensor_value_to_double(&tvoc)), &sensor_4); 
+	sensor_4.values.tvoc = (int) (sensor_value_to_double(&tvoc));
 }
 
 static const struct bt_data ad[] = {
@@ -484,8 +541,7 @@ void main(void)
 	printk("KERNEL: Started Custom Bluetooth Service\n");
 	/*** Sensor code -Winson */
 	const struct device *hts221 = device_get_binding("HTS221");
-	const struct device *ccs811 = device_get_binding(DT_LABEL(DT_INST(0, ams_ccs811)));
-
+	const struct device *ccs811 = device_get_binding("CCS811");
 	if (hts221 == NULL) {
 		printf("Could not get HTS221 device\n");
 		return;
@@ -524,9 +580,7 @@ void main(void)
 		k_sleep(K_SECONDS(1));
 
 		/* Temperature simulation */
-		if (simulate_temp) {
-			ess_simulate(hts221);
-		}
+		ess_simulate(hts221, ccs811);
 
 		/* Battery level simulation */
 		bas_notify();
