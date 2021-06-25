@@ -38,6 +38,7 @@
 #define SENSOR_2_UPDATE_IVAL			12
 #define SENSOR_3_UPDATE_IVAL			60
 #define SENSOR_4_UPDATE_IVAL			30
+#define SENSOR_5_UPDATE_IVAL			15
 
 /* ESS error definitions */
 #define ESS_ERR_WRITE_REJECT			0x80
@@ -56,9 +57,20 @@
 #define ESS_NOT_EQUAL_TO_REF_VALUE		0x09
 
 /*** use uuid's defined here https://nordicsemiconductor.github.io/Nordic-Thingy52-FW/documentation/firmware_architecture.html */
-static const struct bt_uuid_128 ccs811_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 env_uuid = BT_UUID_INIT_128(
+		BT_UUID_128_ENCODE(0xEF680200,0x9B35,0x4933,0x9B10,0x52FFA9740042));
+
+static const struct bt_uuid_128 gas_uuid = BT_UUID_INIT_128(
 		BT_UUID_128_ENCODE(0xEF680204,0x9B35,0x4933,0x9B10,0x52FFA9740042));
 
+static const struct bt_uuid_128 pressure_uuid = BT_UUID_INIT_128(
+		BT_UUID_128_ENCODE(0xEF680202,0x9B35,0x4933,0x9B10,0x52FFA9740042));
+
+static const struct bt_uuid_128 temp_uuid = BT_UUID_INIT_128(
+		BT_UUID_128_ENCODE(0xEF680201,0x9B35,0x4933,0x9B10,0x52FFA9740042));
+
+static const struct bt_uuid_128 humidity_uuid = BT_UUID_INIT_128(
+		BT_UUID_128_ENCODE(0xEF680203,0x9B35,0x4933,0x9B10,0x52FFA9740042));
 /* Environmental Sensing Service Declaration */
 
 struct es_measurement {
@@ -103,13 +115,28 @@ struct air_quality_sensor {
 	uint8_t condition;
 	union {
 		uint32_t seconds;
-		int16_t ref_val; /* Reference temperature */
+		int16_t ref_val; /* Not actually used  */
 	};
-
 
 	struct es_measurement meas;
 };
 
+struct pressure_values {
+	int32_t integer;
+	uint8_t decimal;
+}__packed;
+
+struct pressure_sensor {
+	struct pressure_values values;
+	uint8_t condition;
+
+	union {
+		uint32_t seconds;
+		int16_t ref_val; /* Reference value is not acutally used*/
+	};
+
+	struct es_measurement meas;
+}
 /*** read call backs, used to define how the data should be read for the BT_GATT_CHARACTERISTICS macros */
 static ssize_t read_u16(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			void *buf, uint16_t len, uint16_t offset)
@@ -133,6 +160,16 @@ static ssize_t read_air_quality_values(struct bt_conn *conn, const struct bt_gat
 				 sizeof(values_to_send));
 }
 
+static ssize_t read_pressure_values(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			void *buf, uint16_t len, uint16_t offset)
+{
+	const struct pressure_values *values = attr->user_data;
+	struct pressure_values values_to_send;
+	values_to_send.integer = sys_cpu_to_le32(values->integer);
+	values_to_send.decimal = values->decimal;
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &values_to_send,
+				 sizeof(values_to_send));
+}
 /*** Initialize sensors */
 /*** these bools are used to only fetch data when notify is enabled*/
 static bool notify_temp;
@@ -181,6 +218,19 @@ static struct air_quality_sensor sensor_4 = {
 		.meas.meas_uncertainty = 0x04,
 };
 
+static struct pressure_sensor sensor_5 = {
+		.values.integer = 0,
+		.valeus.decimal = 0,
+		.condition = ESS_VALUE_CHANGED,
+		.meas.sampling_func = 0x00,
+		.meas.meas_period = 0x01,
+		.meas.update_interval = SENSOR_5_UPDATE_IVAL,
+		.meas.application = 0x1b,
+		.meas.meas_uncertainty = 0x04,
+		
+};
+
+/*** Client characteristic configuration */
 static void temp_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				 uint16_t value)
 {
@@ -192,6 +242,12 @@ static void gas_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 {
 	notify_gas = value == BT_GATT_CCC_NOTIFY;
 }
+static void pressure_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+				 uint16_t value)
+{
+	notify_pressure = value == BT_GATT_CCC_NOTIFY;
+}
+
 struct read_es_measurement_rp {
 	uint16_t flags; /* Reserved for Future Use */
 	uint8_t sampling_function;
@@ -309,7 +365,64 @@ static bool check_condition(uint8_t condition, int16_t old_val, int16_t new_val,
 		return false;
 	}
 }
-/*** used for notify */
+
+static bool check_condition_int32(uint8_t condition, int32_t old_val, int32_t new_val,
+			    int32_t ref_val)
+{
+	switch (condition) {
+	case ESS_TRIGGER_INACTIVE:
+		return false;
+	case ESS_FIXED_TIME_INTERVAL:
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
+		/* TODO: Check time requirements */
+		return false;
+	case ESS_VALUE_CHANGED:
+		return new_val != old_val;
+	case ESS_LESS_THAN_REF_VALUE:
+		return new_val < ref_val;
+	case ESS_LESS_OR_EQUAL_TO_REF_VALUE:
+		return new_val <= ref_val;
+	case ESS_GREATER_THAN_REF_VALUE:
+		return new_val > ref_val;
+	case ESS_GREATER_OR_EQUAL_TO_REF_VALUE:
+		return new_val >= ref_val;
+	case ESS_EQUAL_TO_REF_VALUE:
+		return new_val == ref_val;
+	case ESS_NOT_EQUAL_TO_REF_VALUE:
+		return new_val != ref_val;
+	default:
+		return false;
+	}
+}
+static bool check_condition_uint8(uint8_t condition, uint8_t old_val, uint8_t new_val,
+			    int16_t ref_val)
+{
+	switch (condition) {
+	case ESS_TRIGGER_INACTIVE:
+		return false;
+	case ESS_FIXED_TIME_INTERVAL:
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
+		/* TODO: Check time requirements */
+		return false;
+	case ESS_VALUE_CHANGED:
+		return new_val != old_val;
+	case ESS_LESS_THAN_REF_VALUE:
+		return new_val < ref_val;
+	case ESS_LESS_OR_EQUAL_TO_REF_VALUE:
+		return new_val <= ref_val;
+	case ESS_GREATER_THAN_REF_VALUE:
+		return new_val > ref_val;
+	case ESS_GREATER_OR_EQUAL_TO_REF_VALUE:
+		return new_val >= ref_val;
+	case ESS_EQUAL_TO_REF_VALUE:
+		return new_val == ref_val;
+	case ESS_NOT_EQUAL_TO_REF_VALUE:
+		return new_val != ref_val;
+	default:
+		return false;
+	}
+}
+/*** update_ functions are used for notify */
 static void update_temperature(struct bt_conn *conn,
 			       const struct bt_gatt_attr *chrc, int16_t value,
 			       struct temperature_sensor *sensor)
@@ -349,11 +462,33 @@ static void update_gas(	struct bt_conn *conn,
 	}
 
 }
+
+static void update_pressure(struct bt_conn *conn,
+		      	const  struct bt_gatt_attr *chrc, int32_t integer, uint8_t decimal,
+			struct pressure_sensor *sensor)
+{
+	bool notify_integer = check_condition_int32(sensor->condition,
+					  sensor->values.integer, integer,
+					  sensor->ref_val);
+	bool notify_decimal = check_condition_uint8(sensor->condition,
+					  sensor->values.decimal, decimal,
+					  sensor->ref_val);
+	sensor->values.integer = integer;
+	sensor->values.decimal = decimal;
+	if(notify_co2 || notify_tvoc) {
+		struct pressure_values values_to_send;
+		values_to_send.integer = sys_cpu_to_le32(sensor->values.integer);
+		values_to_send.decimal = sensor->values.decimal;
+		bt_gatt_notify(conn, chrc, &values_to_send, sizeof(values_to_send));
+	}
+
+}
+
 BT_GATT_SERVICE_DEFINE(ess_svc,
-	BT_GATT_PRIMARY_SERVICE(BT_UUID_ESS),
+	BT_GATT_PRIMARY_SERVICE(&env_uuid.uuid),
 
 	/* Temperature Sensor 1 */
-	BT_GATT_CHARACTERISTIC(BT_UUID_TEMPERATURE,
+	BT_GATT_CHARACTERISTIC(&temp_uuid.uuid,
 			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
 			       read_u16, NULL, &sensor_1.temp_value),
@@ -369,7 +504,7 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 
 	/* Temperature Sensor 2 */
-	BT_GATT_CHARACTERISTIC(BT_UUID_TEMPERATURE,
+	BT_GATT_CHARACTERISTIC(&temp_uuid.uuid,
 			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
 			       read_u16, NULL, &sensor_2.temp_value),
@@ -385,20 +520,29 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 
 	/* Humidity Sensor */
-	BT_GATT_CHARACTERISTIC(BT_UUID_HUMIDITY, BT_GATT_CHRC_READ,
+	BT_GATT_CHARACTERISTIC(&humidity_uuid.uuid, BT_GATT_CHRC_READ,
 			       BT_GATT_PERM_READ,
 			       read_u16, NULL, &sensor_3.humid_value),
 	BT_GATT_CUD(SENSOR_3_NAME, BT_GATT_PERM_READ),
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
 			   read_es_measurement, NULL, &sensor_3.meas),
 	/* Air Quality Sensor */
-	BT_GATT_CHARACTERISTIC(&ccs811_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+	BT_GATT_CHARACTERISTIC(&gas_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
 			       read_air_quality_values, NULL, &sensor_4.values),
 	BT_GATT_CUD(SENSOR_4_NAME, BT_GATT_PERM_READ),
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
 			   read_es_measurement, NULL, &sensor_4.meas),
 	BT_GATT_CCC(gas_ccc_cfg_changed,
+		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+	/* Pressure Sensor */
+	BT_GATT_CHARACTERISTIC(&pressure_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+			       BT_GATT_PERM_READ,
+			       read_pressure_values, NULL, &sensor_4.values),
+	BT_GATT_CUD(SENSOR_5_NAME, BT_GATT_PERM_READ),
+	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
+			   read_es_measurement, NULL, &sensor_5.meas),
+	BT_GATT_CCC(pressure_ccc_cfg_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 );
 
@@ -443,9 +587,9 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 		return;
 	}
 	printf("CCS811 gas sensor value: %d\n",(int) (sensor_value_to_double(&co2)));
-	//sensor_4.values.eco2 = (int) (sensor_value_to_double(&co2));
 	update_gas(NULL, &ess_svc.attrs[20], (int)(sensor_value_to_double(&co2)), (int) (sensor_value_to_double(&tvoc)), &sensor_4); 
-	sensor_4.values.tvoc = (int) (sensor_value_to_double(&tvoc));
+
+	
 }
 
 static const struct bt_data ad[] = {
