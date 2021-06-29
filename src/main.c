@@ -88,6 +88,7 @@ struct temperature_values {
 	int8_t integer;
 	uint8_t decimal;
 }__packed;
+
 struct temperature_sensor {
 	int16_t temp_value;
 
@@ -107,6 +108,13 @@ struct temperature_sensor {
 
 struct humidity_sensor {
 	int16_t humid_value;
+
+	/* ES trigger setting - Value Notification condition */
+	uint8_t condition;
+	union {
+		uint32_t seconds;
+		int16_t ref_val; /* Reference temperature */
+	};
 
 	struct es_measurement meas;
 };
@@ -191,6 +199,8 @@ static bool notify_temp;
 static bool notify_co2;
 static bool notify_tvoc;
 static bool notify_pressure;
+static bool notify_humidity;
+
 static struct temperature_sensor sensor_1 = {
 		.temp_value = 1200,
 		.lower_limit = -10000,
@@ -205,11 +215,12 @@ static struct temperature_sensor sensor_1 = {
 
 static struct humidity_sensor sensor_2 = {
 		.humid_value = 6233,
-		.meas.sampling_func = 0x02,
-		.meas.meas_period = 0x0e10,
+		.condition = ESS_VALUE_CHANGED,
+		.meas.sampling_func = 0x00,
+		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_2_UPDATE_IVAL,
 		.meas.application = 0x1c,
-		.meas.meas_uncertainty = 0x01,
+		.meas.meas_uncertainty = 0x04,
 };
 
 static struct air_quality_sensor sensor_3 = {
@@ -252,6 +263,12 @@ static void pressure_ccc_cfg_changed(const struct bt_gatt_attr *attr,
 				 uint16_t value)
 {
 	notify_pressure = value == BT_GATT_CCC_NOTIFY;
+}
+
+static void humidity_ccc_cfg_changed(const struct bt_gatt_attr *attr,
+				 uint16_t value)
+{
+	notify_humidity = value == BT_GATT_CCC_NOTIFY;
 }
 
 struct read_es_measurement_rp {
@@ -504,6 +521,19 @@ static void update_pressure(struct bt_conn *conn,
 
 }
 
+static void update_humidity(struct bt_conn *conn,
+		const struct bt_gatt_attr *chrc, int16_t value, struct humidity_sensor *sensor)
+{
+	bool notify = check_condition(sensor->condition,
+				      sensor->humid_value, value,
+				      sensor->ref_val);
+
+	sensor->humid_value = value; 
+	if(notify) {
+		bt_gatt_notify(conn, chrc, &value, sizeof(value));
+	}
+}
+
 BT_GATT_SERVICE_DEFINE(ess_svc,
 	BT_GATT_PRIMARY_SERVICE(&env_uuid.uuid),
 
@@ -523,12 +553,14 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 	BT_GATT_CCC(temp_ccc_cfg_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 	/* Humidity Sensor */
-	BT_GATT_CHARACTERISTIC(&humidity_uuid.uuid, BT_GATT_CHRC_READ,
+	BT_GATT_CHARACTERISTIC(&humidity_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
 			       read_u16, NULL, &sensor_2.humid_value),
 	BT_GATT_CUD(SENSOR_2_NAME, BT_GATT_PERM_READ),
 	BT_GATT_DESCRIPTOR(BT_UUID_ES_MEASUREMENT, BT_GATT_PERM_READ,
 			   read_es_measurement, NULL, &sensor_2.meas),
+	BT_GATT_CCC(humidity_ccc_cfg_changed,
+		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 	/* Air Quality Sensor */
 	BT_GATT_CHARACTERISTIC(&gas_uuid.uuid, BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ,
@@ -575,7 +607,7 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 
 	}
 	update_temperature(NULL, &ess_svc.attrs[2], (int) (sensor_value_to_double(&temp) * 100), &sensor_1);
-	sensor_2.humid_value = (int) (sensor_value_to_double(&hum));
+	update_humidity(NULL, &ess_svc.attrs[9], (int) (sensor_value_to_double(&hum)), &sensor_2);
 
 	if (sensor_sample_fetch(ccs811) < 0) {
 		printf("Sensor sample update error: ccs811\n");
@@ -592,7 +624,7 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 		return;
 	}
 	//printf("CCS811 gas sensor value: %d\n",(int) (sensor_value_to_double(&co2)));
-	update_gas(NULL, &ess_svc.attrs[13], (int)(sensor_value_to_double(&co2)), (int) (sensor_value_to_double(&tvoc)), &sensor_3); 
+	update_gas(NULL, &ess_svc.attrs[14], (int)(sensor_value_to_double(&co2)), (int) (sensor_value_to_double(&tvoc)), &sensor_3); 
 
 	if (sensor_sample_fetch(lps22hb) < 0) {
 		printf("Sensor sample update error: lps22hb\n");
@@ -610,7 +642,7 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 	}
 	pressure.val1 =  pressure.val1 * 10 + pressure.val2/(z);
 	pressure.val2 = pressure.val2 - ((pressure.val2/(z)) * z);
-	update_pressure(NULL, &ess_svc.attrs[18], pressure.val1, pressure.val2, &sensor_4);
+	update_pressure(NULL, &ess_svc.attrs[19], pressure.val1, pressure.val2, &sensor_4);
 }
 
 static const struct bt_data ad[] = {
