@@ -602,6 +602,14 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 		printf("Cannot read LPS22HB pressure channel\n");
 		return;
 	}
+	//Move left most digit from val 2 as right most digit for val1 for pressure value
+	int decimal_length = findLength(pressure.val2);
+	int z = 1;
+	for(int i = 0; i < decimal_length-1; i++){
+		z = z * 10;	
+	}
+	pressure.val1 =  pressure.val1 * 10 + pressure.val2/(z);
+	pressure.val2 = pressure.val2 - ((pressure.val2/(z)) * z);
 	update_pressure(NULL, &ess_svc.attrs[18], pressure.val1, pressure.val2, &sensor_4);
 }
 
