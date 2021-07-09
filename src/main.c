@@ -15,6 +15,7 @@
 #include <sys/printk.h>
 #include <sys/byteorder.h>
 #include <zephyr.h>
+#include <stdlib.h>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/hci.h>
@@ -30,21 +31,25 @@
 #include <stdio.h>
 #include <sys/util.h>
 
+/* For battery*/
+
+#include "battery.h"
+
 /*For data manipulation*/
 #include <math.h>
 
-#define SENSOR_1_NAME				"Temperature Sensor 1"
+#define SENSOR_1_NAME				"Temperature Sensor"
 #define SENSOR_2_NAME				"Humidity Sensor"
 #define SENSOR_3_NAME				"Air Quality Sensor"
 #define SENSOR_4_NAME				"Pressure Sensor"
 // Color sensor has not been implemented yet
 #define SENSOR_5_NAME				"Color Sensor"
-/* Sensor Internal Update Interval [seconds] */
-#define SENSOR_1_UPDATE_IVAL			5
-#define SENSOR_2_UPDATE_IVAL			5
-#define SENSOR_3_UPDATE_IVAL			5
-#define SENSOR_4_UPDATE_IVAL			5
-#define SENSOR_5_UPDATE_IVAL			5
+/* Sensor Internal Update Interval [milliseconds] */
+#define SENSOR_1_UPDATE_IVAL			5000
+#define SENSOR_2_UPDATE_IVAL			5000
+#define SENSOR_3_UPDATE_IVAL			5000
+#define SENSOR_4_UPDATE_IVAL			5000
+#define SENSOR_5_UPDATE_IVAL			5000
 
 /* ESS error definitions */
 #define ESS_ERR_WRITE_REJECT			0x80
@@ -83,6 +88,8 @@ static const struct bt_uuid_128 env_config_uuid = BT_UUID_INIT_128(
 		BT_UUID_128_ENCODE(0xEF680206,0x9B35,0x4933,0x9B10,0x52FFA9740042));
 /* Environmental Sensing Service Declaration */
 /* structs used to define the service */
+
+uint64_t clock;
 struct es_measurement {
 	uint16_t flags; /* Reserved for Future Use */
 	uint8_t sampling_func;
@@ -199,7 +206,7 @@ int findLength(int value) {
 	}
 	return length;
 }
-
+//start_time is used for time based notifications
 /* Initialize sensors */
 /* these bools are used to only fetch data when notify is enabled*/
 static bool notify_temp;
@@ -213,7 +220,7 @@ static struct temperature_sensor sensor_1 = {
 		.values.decimal = 0,
 		.lower_limit = -10000,
 		.upper_limit = 10000,
-		.condition = ESS_VALUE_CHANGED,
+		.condition = ESS_NO_LESS_THAN_SPECIFIED_TIME,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_1_UPDATE_IVAL,
@@ -223,7 +230,7 @@ static struct temperature_sensor sensor_1 = {
 
 static struct humidity_sensor sensor_2 = {
 		.humid_value = 0,
-		.condition = ESS_VALUE_CHANGED,
+		.condition = ESS_NO_LESS_THAN_SPECIFIED_TIME,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_2_UPDATE_IVAL,
@@ -234,7 +241,7 @@ static struct humidity_sensor sensor_2 = {
 static struct air_quality_sensor sensor_3 = {
 		.values.eco2 = 100,
 		.values.tvoc = 100,
-		.condition = ESS_VALUE_CHANGED,
+		.condition = ESS_NO_LESS_THAN_SPECIFIED_TIME,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_3_UPDATE_IVAL,
@@ -245,7 +252,7 @@ static struct air_quality_sensor sensor_3 = {
 static struct pressure_sensor sensor_4 = {
 		.values.integer = 0,
 		.values.decimal = 0,
-		.condition = ESS_VALUE_CHANGED,
+		.condition = ESS_NO_LESS_THAN_SPECIFIED_TIME,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_4_UPDATE_IVAL,
@@ -258,7 +265,7 @@ static struct color_sensor sensor_5 = {
 		.values.green = 0,
 		.values.blue = 0,
 		.values.clear = 0,
-		.condition = ESS_VALUE_CHANGED,
+		.condition = ESS_NO_LESS_THAN_SPECIFIED_TIME,
 		.meas.sampling_func = 0x00,
 		.meas.meas_period = 0x01,
 		.meas.update_interval = SENSOR_5_UPDATE_IVAL,
@@ -365,12 +372,14 @@ static ssize_t write_env_conf(struct bt_conn *conn,
 	else {
 		gas_int = 60000;
 	}
-	//I think the update interval is in seconds -Winson
-	sensor_1.meas.update_interval = env_config.temp_int/1000;
-	sensor_2.meas.update_interval = env_config.humid_int/1000;
-	sensor_3.meas.update_interval = gas_int/1000;
-	sensor_4.meas.update_interval = env_config.press_int/1000;
-	sensor_5.meas.update_interval = env_config.color_int/1000;
+	
+	sensor_1.meas.update_interval = env_config.temp_int;
+	sensor_2.meas.update_interval = env_config.humid_int;
+	sensor_3.meas.update_interval = gas_int;
+	sensor_4.meas.update_interval = env_config.press_int;
+	sensor_5.meas.update_interval = env_config.color_int;
+	clock = 0;
+	printf("Clock reset Time: %lld\n", clock);
 	return len;
 }
 
@@ -489,15 +498,16 @@ static ssize_t read_temp_trigger_setting(struct bt_conn *conn,
 }
 /* determines which condition we notify on*/
 static bool check_condition(uint8_t condition, int16_t old_val, int16_t new_val,
-			    int16_t ref_val)
+			    int16_t ref_val, uint32_t time_interval)
 {
 	switch (condition) {
 	case ESS_TRIGGER_INACTIVE:
 		return false;
 	case ESS_FIXED_TIME_INTERVAL:
-	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
-		/* TODO: Check time requirements */
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME: {
+		if(clock * 1000 % time_interval == 0) return true;
 		return false;
+		}
 	case ESS_VALUE_CHANGED:
 		return new_val != old_val;
 	case ESS_LESS_THAN_REF_VALUE:
@@ -518,15 +528,16 @@ static bool check_condition(uint8_t condition, int16_t old_val, int16_t new_val,
 }
 
 static bool check_condition_uint16(uint8_t condition, uint16_t old_val, uint16_t new_val,
-			    uint16_t ref_val)
+			    uint16_t ref_val, uint32_t time_interval)
 {
 	switch (condition) {
 	case ESS_TRIGGER_INACTIVE:
 		return false;
 	case ESS_FIXED_TIME_INTERVAL:
-	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
-		/* TODO: Check time requirements */
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME: {
+		if(clock * 1000 % time_interval == 0) return true;
 		return false;
+		}
 	case ESS_VALUE_CHANGED:
 		return new_val != old_val;
 	case ESS_LESS_THAN_REF_VALUE:
@@ -546,15 +557,16 @@ static bool check_condition_uint16(uint8_t condition, uint16_t old_val, uint16_t
 	}
 }
 static bool check_condition_int32(uint8_t condition, int32_t old_val, int32_t new_val,
-			    int32_t ref_val)
+			    int32_t ref_val, uint32_t time_interval)
 {
 	switch (condition) {
 	case ESS_TRIGGER_INACTIVE:
 		return false;
 	case ESS_FIXED_TIME_INTERVAL:
-	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
-		/* TODO: Check time requirements */
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME: {
+		if(clock * 1000 % time_interval == 0) return true;
 		return false;
+		}
 	case ESS_VALUE_CHANGED:
 		return new_val != old_val;
 	case ESS_LESS_THAN_REF_VALUE:
@@ -574,15 +586,16 @@ static bool check_condition_int32(uint8_t condition, int32_t old_val, int32_t ne
 	}
 }
 static bool check_condition_int8(uint8_t condition, int8_t old_val, int8_t new_val,
-			    int8_t ref_val)
+			    int8_t ref_val, uint32_t time_interval)
 {
 	switch (condition) {
 	case ESS_TRIGGER_INACTIVE:
 		return false;
 	case ESS_FIXED_TIME_INTERVAL:
-	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
-		/* TODO: Check time requirements */
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME: {
+		if(clock * 1000 % time_interval == 0) return true;
 		return false;
+		}
 	case ESS_VALUE_CHANGED:
 		return new_val != old_val;
 	case ESS_LESS_THAN_REF_VALUE:
@@ -602,15 +615,16 @@ static bool check_condition_int8(uint8_t condition, int8_t old_val, int8_t new_v
 	}
 }
 static bool check_condition_uint8(uint8_t condition, uint8_t old_val, uint8_t new_val,
-			    uint8_t ref_val)
+			    uint8_t ref_val, uint32_t time_interval)
 {
 	switch (condition) {
 	case ESS_TRIGGER_INACTIVE:
 		return false;
 	case ESS_FIXED_TIME_INTERVAL:
-	case ESS_NO_LESS_THAN_SPECIFIED_TIME:
-		/* TODO: Check time requirements */
+	case ESS_NO_LESS_THAN_SPECIFIED_TIME: {
+		if(clock * 1000 % time_interval == 0) return true;
 		return false;
+		}
 	case ESS_VALUE_CHANGED:
 		return new_val != old_val;
 	case ESS_LESS_THAN_REF_VALUE:
@@ -642,10 +656,10 @@ static void update_temperature(struct bt_conn *conn,
 	sensor->values.decimal = decimal;
 	bool notify_integer = check_condition_int8(sensor->condition,
 				      sensor->values.integer, integer,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 	bool notify_decimal = check_condition_uint8(sensor->condition,
 				      sensor->values.integer, decimal,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 
 	/* Trigger notification if conditions are met */
 	if (notify_integer || notify_decimal) {
@@ -664,10 +678,10 @@ static void update_gas(	struct bt_conn *conn,
 {
 	bool notify_co2 = check_condition(sensor->condition,
 					  sensor->values.eco2, co2,
-					  sensor->ref_val);
+					  sensor->ref_val, sensor->meas.update_interval);
 	bool notify_tvoc = check_condition(sensor->condition,
 					  sensor->values.tvoc, tvoc,
-					  sensor->ref_val);
+					  sensor->ref_val, sensor->meas.update_interval);
 	sensor->values.eco2 = co2;
 	sensor->values.tvoc = tvoc;
 	if(notify_co2 || notify_tvoc) {
@@ -685,10 +699,10 @@ static void update_pressure(struct bt_conn *conn,
 {
 	bool notify_integer = check_condition_int32(sensor->condition,
 					  sensor->values.integer, integer,
-					  sensor->ref_val);
+					  sensor->ref_val, sensor->meas.update_interval);
 	bool notify_decimal = check_condition_uint8(sensor->condition,
 					  sensor->values.decimal, decimal,
-					  sensor->ref_val);
+					  sensor->ref_val, sensor->meas.update_interval);
 	sensor->values.integer = integer;
 	sensor->values.decimal = decimal;
 	if(notify_integer || notify_decimal) {
@@ -705,12 +719,11 @@ static void update_humidity(struct bt_conn *conn,
 {
 	bool notify = check_condition(sensor->condition,
 				      sensor->humid_value, (uint8_t) value.val1,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 
 	sensor->humid_value = (uint8_t)value.val1; 
-	printf("Humidity Sensor Updated: %d, hex form %x \n", sensor->humid_value, sensor->humid_value);
 	if(notify) {
-		printf("Humidity Notified \n", sensor->humid_value, sensor->humid_value);
+		printf("Humidity Notification Time: %lld\n", clock);
 		bt_gatt_notify(conn, chrc, &sensor->humid_value, sizeof(sensor->humid_value));
 	}
 }
@@ -720,16 +733,16 @@ static void update_color(struct bt_conn *conn,
 {
 	bool notify_red = check_condition_uint16(sensor->condition,
 				      sensor->values.red, red,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 	bool notify_green = check_condition_uint16(sensor->condition,
 				      sensor->values.green, green,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 	bool notify_blue = check_condition_uint16(sensor->condition,
 				      sensor->values.blue, blue,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 	bool notify_clear = check_condition_uint16(sensor->condition,
 				      sensor->values.clear, clear,
-				      sensor->ref_val);
+				      sensor->ref_val, sensor->meas.update_interval);
 	sensor->values.red = red;
 	sensor->values.blue = blue;
 	sensor->values.green = green;
@@ -740,8 +753,6 @@ static void update_color(struct bt_conn *conn,
 		values_to_send.green = green;
 		values_to_send.blue = blue;
 		values_to_send.clear = clear;
-			
-		printf("Color check: R: %d G: %d B: %d C: %d \n", values_to_send.red, values_to_send.green, values_to_send.blue, values_to_send.clear);
 		bt_gatt_notify(conn, chrc, &values_to_send, sizeof(values_to_send)); 
 	}
 }
@@ -806,7 +817,7 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 	
 );
 
-static void ess_simulate(const struct device *hts221, const struct device *ccs811, const struct device *lps22hb )
+static void ess_simulate(const struct device *hts221, const struct device *ccs811, const struct device *lps22hb)
 {
 	/* Sensor Code -Winson */
 	//HTS221 temp and humidity sensor
@@ -848,7 +859,6 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 		printf("Cannot read HTS221 voc channel\n");
 		return;
 	}
-	//printf("CCS811 gas sensor value: %d\n",(int) (sensor_value_to_double(&co2)));
 	update_gas(NULL, &ess_svc.attrs[14], (int)(sensor_value_to_double(&co2)), (int) (sensor_value_to_double(&tvoc)), &sensor_3); 
 
 	if (sensor_sample_fetch(lps22hb) < 0) {
@@ -869,6 +879,8 @@ static void ess_simulate(const struct device *hts221, const struct device *ccs81
 	pressure.val2 = pressure.val2 - ((pressure.val2/(z)) * z);
 	update_pressure(NULL, &ess_svc.attrs[19], pressure.val1, pressure.val2, &sensor_4);
 	update_color(NULL, &ess_svc.attrs[24], 1, 1, 1, 1, &sensor_5);
+	
+	clock = clock + 1;
 }
 
 static const struct bt_data ad[] = {
@@ -937,16 +949,40 @@ static struct bt_conn_auth_cb auth_cb_display = {
 	.cancel = auth_cancel,
 };
 
+/** A discharge curve specific to the power source. */
+static const struct battery_level_point levels[] = {
+#if DT_NODE_HAS_PROP(DT_INST(0, voltage_divider), io_channels)
+	/* "Curve" here eyeballed from captured data for the [Adafruit
+	 * 3.7v 2000 mAh](https://www.adafruit.com/product/2011) LIPO
+	 * under full load that started with a charge of 3.96 V and
+	 * dropped about linearly to 3.58 V over 15 hours.  It then
+	 * dropped rapidly to 3.10 V over one hour, at which point it
+	 * stopped transmitting.
+	 *
+	 * Based on eyeball comparisons we'll say that 15/16 of life
+	 * goes between 3.95 and 3.55 V, and 1/16 goes between 3.55 V
+	 * and 3.1 V.
+	 */
+
+	{ 10000, 3950 },
+	{ 625, 3550 },
+	{ 0, 3100 },
+#else
+	/* Linear from maximum voltage to minimum voltage. */
+	{ 10000, 3600 },
+	{ 0, 1700 },
+#endif
+};
+
 static void bas_notify(void)
 {
-	uint8_t battery_level = bt_bas_get_battery_level();
-
-	battery_level--;
-
-	if (!battery_level) {
-		battery_level = 100U;
+	int batt_mV = battery_sample();
+	if (batt_mV < 0) {
+		printk("Failed to read battery voltage: %d\n",
+		       batt_mV);
+		return;
 	}
-
+	uint8_t battery_level = battery_level_pptt(batt_mV, levels) / 100;
 	bt_bas_set_battery_level(battery_level);
 }
 /* struct for sensor -Winson*/
@@ -959,6 +995,11 @@ static void hts221_handler(const struct device *dev,
 void main(void)
 {
 	int err;
+	int rc = battery_measure_enable(true);
+	if(rc != 0) {
+		printk("Failed initialize battery measurement: %d\n", rc);
+		return;
+	}
 	printf("Started Custom Bluetooth Service\n");
 	printk("KERNEL: Started Custom Bluetooth Service\n");
 	/* Sensor code -Winson */
@@ -1003,6 +1044,7 @@ void main(void)
 
 	bt_conn_cb_register(&conn_callbacks);
 	bt_conn_auth_cb_register(&auth_cb_display);
+	clock = 0;
 
 	while (!IS_ENABLED(CONFIG_HTS221_TRIGGER)) {
 		k_sleep(K_SECONDS(1));

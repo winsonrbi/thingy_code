@@ -17,3 +17,7 @@ tests:
             - "Temperature: (.*)"
             - "Relative Humidity: (.*)"
         fixture: fixture_i2c_hts221
+  sample.boards.nrf.battery:
+    build_only: true
+    platform_allow: particle_xenon thingy52_nrf52832
+    tags: battery
