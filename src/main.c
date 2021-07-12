@@ -5,8 +5,6 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-//TODO CHECK WHY COLOR INTENISTY VALUE IS INVALID
-//	CHECK red green blue and clear in hex
 #include <stdbool.h>
 #include <zephyr/types.h>
 #include <stddef.h>
@@ -32,7 +30,6 @@
 #include <sys/util.h>
 
 /* For battery*/
-
 #include "battery.h"
 
 /*For data manipulation*/
@@ -55,7 +52,7 @@
 #define ESS_ERR_WRITE_REJECT			0x80
 #define ESS_ERR_COND_NOT_SUPP			0x81
 
-/* ESS Trigger Setting conditions */
+/* ESS Trigger Setting conditions used for notifications */
 #define ESS_TRIGGER_INACTIVE			0x00
 #define ESS_FIXED_TIME_INTERVAL			0x01
 #define ESS_NO_LESS_THAN_SPECIFIED_TIME		0x02
@@ -86,10 +83,9 @@ static const struct bt_uuid_128 color_uuid = BT_UUID_INIT_128(
 		BT_UUID_128_ENCODE(0xEF680205,0x9B35,0x4933,0x9B10,0x52FFA9740042));
 static const struct bt_uuid_128 env_config_uuid = BT_UUID_INIT_128(
 		BT_UUID_128_ENCODE(0xEF680206,0x9B35,0x4933,0x9B10,0x52FFA9740042));
-/* Environmental Sensing Service Declaration */
-/* structs used to define the service */
-
+//Clock used to send notification based on a period for each sensor
 uint64_t clock;
+//Struct is used in each sensor struct and maintains data useful in the measurement of data
 struct es_measurement {
 	uint16_t flags; /* Reserved for Future Use */
 	uint8_t sampling_func;
@@ -98,12 +94,13 @@ struct es_measurement {
 	uint8_t application;
 	uint8_t meas_uncertainty;
 };
-
+//struct that is sent thru notify, conforms to Thingy52 Firmware Architecture
 struct temperature_values {
 	int8_t integer;
 	uint8_t decimal;
 }__packed;
-
+/* Temperature sensor struct used to maintain the sensor's value and
+other pertinent data to the sensor */
 struct temperature_sensor {
 	struct temperature_values values;
 
@@ -190,6 +187,7 @@ struct color_calibration {
 	uint8_t green_int;
 	uint8_t blue_int;
 }__packed;
+//env configuration struct used to keep track of sensor intervals/periods set by the connected device
 struct env_configuration {
 	uint16_t temp_int;
 	uint16_t press_int;
@@ -215,6 +213,7 @@ static bool notify_tvoc;
 static bool notify_pressure;
 static bool notify_humidity;
 
+//Initialize our sensor structs
 static struct temperature_sensor sensor_1 = {
 		.values.integer = 0,
 		.values.decimal = 0,
@@ -284,6 +283,7 @@ static struct env_configuration env_config = {
 };
 
 /* read call backs, used to define how the data should be read for the BT_GATT_CHARACTERISTICS macros */
+//read_u16 is the original one and the rest were created by Winson based off of this one
 static ssize_t read_u16(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			void *buf, uint16_t len, uint16_t offset)
 {
@@ -756,6 +756,7 @@ static void update_color(struct bt_conn *conn,
 		bt_gatt_notify(conn, chrc, &values_to_send, sizeof(values_to_send)); 
 	}
 }
+//Bluetooth GATT Service is defined using these macros
 BT_GATT_SERVICE_DEFINE(ess_svc,
 	BT_GATT_PRIMARY_SERVICE(&env_uuid.uuid),
 
@@ -816,7 +817,9 @@ BT_GATT_SERVICE_DEFINE(ess_svc,
 			       read_env_conf, write_env_conf, &env_config),
 	
 );
+//End of BT GATT Service declaration
 
+//ess_simulate updates the sensor values
 static void ess_simulate(const struct device *hts221, const struct device *ccs811, const struct device *lps22hb)
 {
 	/* Sensor Code -Winson */
